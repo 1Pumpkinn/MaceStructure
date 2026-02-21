@@ -1,7 +1,5 @@
 # ---------------------------------------------------------------
 # MaceStructure config.yml
-# Biomes can be specified as "minecraft:plains" (namespaced)
-# OR as plain Bukkit names like "PLAINS" — both are accepted.
 # ---------------------------------------------------------------
 
 distance:
@@ -12,68 +10,45 @@ world:
   name: world
 
 structure:
-  # Path to the .nbt file inside the plugin data folder
   file: mace.nbt
-  # Optional: registered structure key (e.g. "mymce:mace_shrine")
-  # Takes priority over 'file' when set.
   key: ""
 
 generated:
   enabled: false
 
-# How many random XZ candidates to try before giving up a round.
-# The plugin will automatically retry with relaxed constraints if
-# all candidates are rejected.
 attempts: 256
 
 placement:
-  # Extra Y blocks added on top of the detected ground level.
   yOffset: 0
 
-  # Require the footprint to be roughly flat.
   requireFlat: true
-  # Maximum height variance (blocks) across the footprint.
-  maxVariance: 3
-  # Minimum fraction of footprint columns that must be solid ground.
-  minSolidRatio: 0.85
-  # Reject candidates that sit on or adjacent to water/lava.
+  # Tight variance — only spawn on genuinely flat terrain.
+  # Retry rounds add up to +4 max, so worst-case is 6 blocks variance.
+  maxVariance: 2
+  minSolidRatio: 0.9
+  # Always reject water/lava — never relaxed
   avoidLiquids: true
 
-  # Whether chunks must already be loaded (false = async-load them).
   requireLoadedChunks: false
-
-  # Clear the volume inside the structure bounding box before placing.
   clearVolumeBefore: true
 
-  # Build a flat stone-brick platform under the structure.
+  # No platform — structure sits directly on terrain
   platform:
-    enabled: true
-    block: STONE_BRICKS
-    baseFill: DIRT
-    depth: 1
+    enabled: false
 
-  # Only place the structure in these biomes.
-  # Accepts "minecraft:plains", "PLAINS", or "plains" — all equivalent.
-  # These are land biomes only — oceans, rivers, and jungles are excluded.
+  # Flat, open land biomes only.
+  # Deliberately excludes: old_growth variants (huge trees), all taiga
+  # variants (dense/hilly), jungle, swamp, ocean, river, beach.
   allowedBiomes:
     - minecraft:plains
     - minecraft:sunflower_plains
-    - minecraft:taiga
-    - minecraft:old_growth_pine_taiga
-    - minecraft:old_growth_spruce_taiga
+    - minecraft:savanna
+    - minecraft:savanna_plateau
     - minecraft:meadow
-    - minecraft:birch_forest
-    - minecraft:old_growth_birch_forest
-    - minecraft:dark_forest
+    - minecraft:snowy_plains
     - minecraft:forest
     - minecraft:flower_forest
-    - minecraft:grove
-    - minecraft:snowy_plains
-    - minecraft:snowy_taiga
-    - minecraft:windswept_hills
-    - minecraft:windswept_gravelly_hills
-    - minecraft:windswept_forest
+    - minecraft:birch_forest
 
-  # Fraction of footprint columns that must be an allowed biome.
-  # Set to 0.0 to disable biome filtering entirely.
-  minAllowedBiomeRatio: 0.75
+  # High ratio required — must be mostly a flat open biome
+  minAllowedBiomeRatio: 0.85
