@@ -1,0 +1,32 @@
+distance:
+  min: 2500
+  max: 4000
+world:
+  name: world
+structure:
+  file: mace.nbt
+  key: ""
+generated:
+  enabled: false
+attempts: 128
+placement:
+  yOffset: 0
+  requireFlat: true
+  maxVariance: 1
+  minSolidRatio: 0.9
+  avoidLiquids: true
+  requireLoadedChunks: false
+  clearVolumeBefore: true
+  platform:
+    enabled: true
+    block: STONE_BRICKS
+    baseFill: DIRT
+    depth: 1
+  allowedBiomes:
+    - PLAINS
+    - SAVANNA
+    - TAIGA
+    - MEADOW
+    - BIRCH_FOREST
+    - DARK_FOREST
+  minAllowedBiomeRatio: 0.8
