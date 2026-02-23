@@ -1,0 +1,12 @@
+name: MaceStructure
+version: '1.0-SNAPSHOT'
+main: net.saturn.maceStructure.MaceStructure
+api-version: '1.21'
+authors: [ PumpkinDev ]
+permissions:
+  macestructure.teleport:
+    description: Allows teleporting to the mace structure
+    default: op
+  macestructure.generate:
+    description: Allows generating the mace structure
+    default: op

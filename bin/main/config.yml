@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------
+# MaceStructure config.yml
+# ---------------------------------------------------------------
+
+distance:
+  min: 2500
+  max: 4000
+
+world:
+  name: world
+
+structure:
+  file: mace.nbt
+  key: ""
+
+generated:
+  enabled: false
+
+attempts: 256
+
+placement:
+  yOffset: 0
+
+  requireFlat: true
+  # Tight variance — only spawn on genuinely flat terrain.
+  # Retry rounds add up to +4 max, so worst-case is 6 blocks variance.
+  maxVariance: 2
+  minSolidRatio: 0.9
+  # Always reject water/lava — never relaxed
+  avoidLiquids: true
+
+  requireLoadedChunks: false
+  clearVolumeBefore: true
+
+  # No platform — structure sits directly on terrain
+  platform:
+    enabled: false
+
+  # Flat, open land biomes only.
+  # Deliberately excludes: old_growth variants (huge trees), all taiga
+  # variants (dense/hilly), jungle, swamp, ocean, river, beach.
+  allowedBiomes:
+    - minecraft:plains
+    - minecraft:sunflower_plains
+    - minecraft:savanna
+    - minecraft:savanna_plateau
+    - minecraft:meadow
+    - minecraft:snowy_plains
+    - minecraft:forest
+    - minecraft:flower_forest
+    - minecraft:birch_forest
+
+  # High ratio required — must be mostly a flat open biome
+  minAllowedBiomeRatio: 0.85

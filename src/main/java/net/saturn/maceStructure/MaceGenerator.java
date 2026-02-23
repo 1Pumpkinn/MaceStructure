@@ -181,10 +181,6 @@ final class MaceGenerator {
             }
 
             // --- Y placement ---
-            // Anchor to the LOWEST ground point in the footprint so the structure
-            // is never elevated above surrounding terrain. Columns that are higher
-            // than this base will be cut down by clearVolume; columns that are
-            // lower will be filled up by fillSupports.
             int sy = (int) size.getY();
             int minY = world.getMinHeight();
             int maxY = world.getMaxHeight();
@@ -212,13 +208,11 @@ final class MaceGenerator {
 
         // Schedule a retry with relaxed constraints, or with chunk loading enabled
         if (rejectUnloaded > 0 && !allowChunkLoad) {
-            // Many chunks were unloaded — retry with chunk loading allowed
             plugin.getLogger().info("Retrying with chunk loading enabled...");
             final World fw = world;
             Bukkit.getScheduler().runTaskLater(plugin, () ->
                     startGenerationRound(true, relaxRound, fw, null, null), 20L);
         } else if (relaxRound < MAX_RELAX_ROUNDS) {
-            // Relax placement constraints and try again
             int next = relaxRound + 1;
             plugin.getLogger().info("Retrying with relaxed constraints (round " + next + "/" + MAX_RELAX_ROUNDS + ")...");
             final World fw = world;
@@ -240,19 +234,13 @@ final class MaceGenerator {
                                 Structure structure, boolean requireFlat) {
         Location loc = new Location(world, x, y, z);
 
-        // Step 1: Fill/cut terrain BEFORE clearing the volume so fillSupports
-        // can read actual ground blocks before clearVolume removes them.
         fillSupports(world, x, z, size, y);
-
-        // Step 2: Clear vegetation on the surface
         preClearSurface(world, x, y, z, size);
 
-        // Step 3: Clear the air volume above baseY only
         if (cfg.getBoolean("placement.clearVolumeBefore", true)) {
             clearVolume(world, x, y, z, size);
         }
 
-        // Step 4: Place the structure
         structure.place(loc, true, StructureRotation.NONE,
                 org.bukkit.block.structure.Mirror.NONE, -1, 1.0f, random);
 
@@ -270,11 +258,6 @@ final class MaceGenerator {
     // Footprint analysis
     // -------------------------------------------------------------------------
 
-    /**
-     * Materials that are NOT considered solid ground when scanning downward.
-     * We skip past these to find the actual terrain surface (ignores tree
-     * canopies, loose vegetation, and liquids that sit on top of ground).
-     */
     private static boolean isNonGround(Material m) {
         return m == Material.AIR
                 || m == Material.CAVE_AIR
@@ -306,17 +289,33 @@ final class MaceGenerator {
      * Returns world.getMinHeight() if nothing solid is found.
      */
     private int findTrueGroundY(World world, int x, int z) {
-        // getHighestBlockYAt gives us the top of any non-air column, which may
-        // be a leaf or log block high up in a tree canopy.
         int startY = world.getHighestBlockYAt(x, z);
         int minY = world.getMinHeight();
         for (int y = startY; y >= minY; y--) {
             Material m = world.getBlockAt(x, y, z).getType();
             if (!isNonGround(m)) {
-                return y; // first genuinely solid terrain block
+                return y;
             }
         }
         return minY;
+    }
+
+    /**
+     * Returns true if the column at (x, z) is submerged — i.e. there is water
+     * or lava sitting above the true ground block. This catches ocean/river
+     * floors where the surface block is stone or gravel but the column is
+     * entirely underwater.
+     */
+    private boolean isSubmerged(World world, int x, int z, int groundY) {
+        int checkY = groundY + 1;
+        int maxY = world.getMaxHeight();
+        while (checkY < maxY) {
+            Material m = world.getBlockAt(x, checkY, z).getType();
+            if (m == Material.WATER || m == Material.LAVA) return true;
+            if (m != Material.AIR && m != Material.CAVE_AIR && m != Material.VOID_AIR) break;
+            checkY++;
+        }
+        return false;
     }
 
     private FlatCheck analyzeFootprint(World world, int originX, int originZ,
@@ -333,13 +332,16 @@ final class MaceGenerator {
                 int gx = originX + dx;
                 int gz = originZ + dz;
 
-                // Use true ground (not tree canopy) for Y sampling
                 int groundY = findTrueGroundY(world, gx, gz);
 
                 if (groundY < minGround) minGround = groundY;
                 if (groundY > maxGround) maxGround = groundY;
 
-                // Sample biome at the true surface, not the canopy
+                // Detect submerged columns (ocean/river floor) — hard reject
+                if (avoidLiquids && isSubmerged(world, gx, gz, groundY)) {
+                    hasLiquid = true;
+                }
+
                 Biome biome = world.getBiome(gx, groundY, gz);
                 if (!allowed.isEmpty() && allowed.contains(biome)) allowedCount++;
 
@@ -349,14 +351,8 @@ final class MaceGenerator {
                 boolean isLiquidSurface = (mat == Material.WATER || mat == Material.LAVA);
                 if (isLiquidSurface) {
                     hasLiquid = true;
-                    // Liquid counts as non-solid ground
                 } else if (mat.isSolid()) {
                     solid++;
-                }
-
-                if (avoidLiquids && isLiquidSurface) {
-                    // No need to keep sampling — liquid means reject anyway
-                    // (still finish loop to get full biome coverage)
                 }
             }
         }
@@ -367,14 +363,12 @@ final class MaceGenerator {
         out.variance = out.maxGround - out.minGround;
         out.solidRatio = total == 0 ? 0 : (solid / (double) total);
         out.hasLiquid = hasLiquid;
-        // If no biomes are configured (allowed is empty), treat every column as
-        // matching so the ratio check never fires.
         out.allowedBiomeRatio = (allowed.isEmpty() || total == 0) ? 1.0 : (allowedCount / (double) total);
         return out;
     }
 
     // -------------------------------------------------------------------------
-    // Biome loading — handles both "PLAINS" and "minecraft:plains" formats
+    // Biome loading
     // -------------------------------------------------------------------------
 
     private Set<Biome> loadAllowedBiomes(FileConfiguration cfg) {
@@ -405,14 +399,10 @@ final class MaceGenerator {
         return result;
     }
 
-    /**
-     * Accepts both "PLAINS" (Bukkit enum name) and "minecraft:plains" (namespaced key).
-     */
     private Biome resolveBiomeByKey(String raw) {
         if (raw == null || raw.isBlank()) return null;
         String s = raw.trim();
 
-        // Normalise to namespaced key format
         if (!s.contains(":")) {
             s = "minecraft:" + s.toLowerCase().replace(' ', '_');
         } else {
@@ -428,7 +418,6 @@ final class MaceGenerator {
             if (b != null) return b;
         } catch (Throwable ignored) {}
 
-        // Fallback: try Bukkit enum
         try {
             return Biome.valueOf(s.replace("minecraft:", "").toUpperCase());
         } catch (IllegalArgumentException ignored) {}
@@ -533,14 +522,6 @@ final class MaceGenerator {
     // Terrain modification helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * For each column in the structure footprint:
-     * - If the terrain is BELOW baseY: fill the gap downward with the block
-     *   that was already at groundY (natural terrain material), falling back to DIRT.
-     * - If the terrain is ABOVE baseY: remove the excess blocks so the structure
-     *   floor is flush with the ground (clearVolume handles the volume above,
-     *   but we also need to cut terrain that pokes above our base Y).
-     */
     private void fillSupports(World world, int originX, int originZ, Vector size, int baseY) {
         int sx = (int) size.getX(), sz = (int) size.getZ();
         for (int dx = 0; dx < sx; dx++) {
@@ -548,21 +529,15 @@ final class MaceGenerator {
                 int x = originX + dx, z = originZ + dz;
                 int groundY = findTrueGroundY(world, x, z);
                 if (groundY < baseY - 1) {
-                    // Terrain is lower than our base — fill the gap
-                    // Use the actual ground material so it looks natural
                     Material fillMat = world.getBlockAt(x, groundY, z).getType();
                     if (!fillMat.isSolid() || isNonGround(fillMat)) fillMat = Material.DIRT;
                     for (int yy = baseY - 1; yy > groundY; yy--) {
                         world.getBlockAt(x, yy, z).setType(fillMat, false);
                     }
                 } else if (groundY >= baseY) {
-                    // Terrain is at or above our base — cut it down so the
-                    // structure floor sits flush (clearVolume handles above baseY,
-                    // but we must also handle exactly at baseY-1 upward)
                     for (int yy = groundY; yy >= baseY; yy--) {
                         world.getBlockAt(x, yy, z).setType(Material.AIR, false);
                     }
-                    // Ensure solid ground at baseY-1, preserving grass naturally
                     Material below = world.getBlockAt(x, baseY - 1, z).getType();
                     if (!below.isSolid() || isNonGround(below)) {
                         world.getBlockAt(x, baseY - 1, z).setType(Material.GRASS_BLOCK, false);
@@ -593,27 +568,8 @@ final class MaceGenerator {
         }
     }
 
-    private void terraformPlatform(World world, int originX, int originZ,
-                                   Vector size, int baseY,
-                                   Material platform, Material baseFill, int depth) {
-        int sx = (int) size.getX(), sz = (int) size.getZ();
-        for (int dx = 0; dx < sx; dx++) {
-            for (int dz = 0; dz < sz; dz++) {
-                int x = originX + dx, z = originZ + dz;
-                for (int d = 1; d <= depth; d++) {
-                    int yy = baseY - d;
-                    if (yy >= world.getMinHeight() && yy < world.getMaxHeight())
-                        world.getBlockAt(x, yy, z).setType(baseFill, false);
-                }
-                if (baseY >= world.getMinHeight() && baseY < world.getMaxHeight())
-                    world.getBlockAt(x, baseY, z).setType(platform, false);
-            }
-        }
-    }
-
     private void clearVolume(World world, int originX, int baseY, int originZ, Vector size) {
         int sx = (int) size.getX();
-        // Only clear FROM baseY upward — never touch baseY-1 or below
         int sy = Math.min((int) size.getY() + 2, world.getMaxHeight() - baseY);
         int sz = (int) size.getZ();
         for (int dx = 0; dx < sx; dx++)
