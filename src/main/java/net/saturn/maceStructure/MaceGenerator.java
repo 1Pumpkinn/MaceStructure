@@ -26,7 +26,6 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 final class MaceGenerator {
     private final Plugin plugin;
@@ -34,6 +33,13 @@ final class MaceGenerator {
 
     /** How many times we will retry after relaxing flatness constraints. */
     private static final int MAX_RELAX_ROUNDS = 3;
+
+    /**
+     * Horizontal radius (in blocks) around each footprint column to scan for water/lava.
+     * Prevents generation on coastal cliffs that technically aren't "underwater" but
+     * are right on the water's edge — exactly the bad-looking case in the screenshot.
+     */
+    private static final int WATER_PROXIMITY_RADIUS = 8;
 
     MaceGenerator(Plugin plugin) {
         this.plugin = plugin;
@@ -105,9 +111,8 @@ final class MaceGenerator {
         double minAllowedBiomeRatioCfg = clamp(cfg.getDouble("placement.minAllowedBiomeRatio", 0.8), 0, 1);
 
         // --- Relaxed overrides ---
+        // NOTE: liquid/water-proximity rejection is NEVER relaxed — it is always a hard reject.
         boolean effectiveRequireFlat = (relaxRound >= 1) ? false : requireFlat;
-        // Liquid is always a hard reject — never relaxed, never skipped
-        boolean effectiveAvoidLiquids = avoidLiquids;
         int maxVariance = Math.min(maxVarianceCfg + relaxRound * 2, maxVarianceCfg + 4);
         double minSolidRatio = Math.max(0, minSolidRatioCfg - relaxRound * 0.15);
         double minAllowedBiomeRatio = (relaxRound >= 1) ? 0.0 : minAllowedBiomeRatioCfg;
@@ -126,7 +131,11 @@ final class MaceGenerator {
         int tries = (reuseX != null && reuseZ != null) ? 1 : attempts;
 
         // Rejection counters
-        int rejectUnloaded = 0, rejectBiome = 0, rejectFlat = 0, rejectBorder = 0;
+        int rejectUnloaded = 0, rejectBiome = 0, rejectFlat = 0, rejectBorder = 0, rejectWater = 0, rejectVolume = 0;
+
+        // Max fraction of the structure volume that may be occupied by solid blocks.
+        // At relaxRound 0 this is 0 (fully clear required). Each round allows a little more.
+        double maxOccupiedRatio = clamp(relaxRound * 0.05, 0, 0.15);
 
         for (int i = 0; i < tries; i++) {
             int x, z;
@@ -147,7 +156,6 @@ final class MaceGenerator {
                     rejectUnloaded++;
                     continue;
                 }
-                // Load chunks async, then retry this exact XZ
                 final int fx = x, fz = z;
                 final int nextRelax = relaxRound;
                 final World fw = world;
@@ -160,16 +168,16 @@ final class MaceGenerator {
             }
 
             // --- Footprint analysis ---
-            FlatCheck check = analyzeFootprint(world, x, z, size, effectiveAvoidLiquids, allowedBiomes);
+            FlatCheck check = analyzeFootprint(world, x, z, size, avoidLiquids, allowedBiomes);
 
-            if (check.allowedBiomeRatio < minAllowedBiomeRatio) {
-                rejectBiome++;
+            // Hard reject: any water/lava in or near the footprint — never relaxed
+            if (avoidLiquids && check.hasLiquid) {
+                rejectWater++;
                 continue;
             }
 
-            // Hard reject on liquids — this is never relaxed
-            if (effectiveAvoidLiquids && check.hasLiquid) {
-                rejectFlat++;
+            if (check.allowedBiomeRatio < minAllowedBiomeRatio) {
+                rejectBiome++;
                 continue;
             }
 
@@ -195,18 +203,26 @@ final class MaceGenerator {
                 continue;
             }
 
+            // --- Volume obstruction check ---
+            // Reject if the 3D space the structure would occupy contains solid terrain blocks.
+            // This prevents the structure from being buried inside a hill.
+            VolumeCheck vol = checkVolumeIsClear(world, x, y, z, size);
+            if (vol.occupiedRatio > maxOccupiedRatio) {
+                rejectVolume++;
+                continue;
+            }
+
             // --- Place ---
-            placeStructure(cfg, world, x, y, z, size, structure, requireFlat);
+            placeStructure(cfg, world, x, y, z, size, structure);
             return;
         }
 
         // --- Failed this round ---
         plugin.getLogger().warning(String.format(
                 "Generation attempt (relaxRound=%d) failed after %d tries. "
-                        + "Rejects: unloaded=%d biome=%d flatness=%d border=%d",
-                relaxRound, tries, rejectUnloaded, rejectBiome, rejectFlat, rejectBorder));
+                        + "Rejects: unloaded=%d biome=%d flatness=%d border=%d water/proximity=%d volume=%d",
+                relaxRound, tries, rejectUnloaded, rejectBiome, rejectFlat, rejectBorder, rejectWater, rejectVolume));
 
-        // Schedule a retry with relaxed constraints, or with chunk loading enabled
         if (rejectUnloaded > 0 && !allowChunkLoad) {
             plugin.getLogger().info("Retrying with chunk loading enabled...");
             final World fw = world;
@@ -231,16 +247,10 @@ final class MaceGenerator {
 
     private void placeStructure(FileConfiguration cfg, World world,
                                 int x, int y, int z, Vector size,
-                                Structure structure, boolean requireFlat) {
+                                Structure structure) {
         Location loc = new Location(world, x, y, z);
 
-        fillSupports(world, x, z, size, y);
-        preClearSurface(world, x, y, z, size);
-
-        if (cfg.getBoolean("placement.clearVolumeBefore", true)) {
-            clearVolume(world, x, y, z, size);
-        }
-
+        // No terrain modification — the location was already validated to be clear.
         structure.place(loc, true, StructureRotation.NONE,
                 org.bukkit.block.structure.Mirror.NONE, -1, 1.0f, random);
 
@@ -283,11 +293,6 @@ final class MaceGenerator {
                 || Tag.FLOWERS.isTagged(m);
     }
 
-    /**
-     * Scan downward from the Minecraft "highest block" to find the first block
-     * that is genuine terrain (not a tree, plant, or liquid surface).
-     * Returns world.getMinHeight() if nothing solid is found.
-     */
     private int findTrueGroundY(World world, int x, int z) {
         int startY = world.getHighestBlockYAt(x, z);
         int minY = world.getMinHeight();
@@ -301,12 +306,17 @@ final class MaceGenerator {
     }
 
     /**
-     * Returns true if the column at (x, z) is submerged — i.e. there is water
-     * or lava sitting above the true ground block. This catches ocean/river
-     * floors where the surface block is stone or gravel but the column is
-     * entirely underwater.
+     * Returns true if the column at (x, z) has water or lava at or above groundY,
+     * OR if any water/lava exists within WATER_PROXIMITY_RADIUS blocks horizontally.
+     *
+     * The proximity check is the key fix: it prevents spawning on coastal cliffs
+     * where the footprint columns themselves are dry stone/grass but the structure
+     * visually hangs right over the ocean edge (as seen in the screenshot).
+     *
+     * This check is NEVER relaxed regardless of relaxRound.
      */
     private boolean isSubmerged(World world, int x, int z, int groundY) {
+        // 1. Direct column: water/lava above the true ground block
         int checkY = groundY + 1;
         int maxY = world.getMaxHeight();
         while (checkY < maxY) {
@@ -314,6 +324,21 @@ final class MaceGenerator {
             if (m == Material.WATER || m == Material.LAVA) return true;
             if (m != Material.AIR && m != Material.CAVE_AIR && m != Material.VOID_AIR) break;
             checkY++;
+        }
+
+        // 2. Proximity: scan nearby columns in a square for water/lava near ground level.
+        //    Check ±4 blocks vertically around groundY to catch ocean surfaces that are
+        //    slightly higher or lower than the footprint's own ground.
+        for (int dx = -WATER_PROXIMITY_RADIUS; dx <= WATER_PROXIMITY_RADIUS; dx++) {
+            for (int dz = -WATER_PROXIMITY_RADIUS; dz <= WATER_PROXIMITY_RADIUS; dz++) {
+                int nx = x + dx, nz = z + dz;
+                for (int dy = -4; dy <= 4; dy++) {
+                    int ny = groundY + dy;
+                    if (ny < world.getMinHeight() || ny >= maxY) continue;
+                    Material m = world.getBlockAt(nx, ny, nz).getType();
+                    if (m == Material.WATER || m == Material.LAVA) return true;
+                }
+            }
         }
         return false;
     }
@@ -337,9 +362,11 @@ final class MaceGenerator {
                 if (groundY < minGround) minGround = groundY;
                 if (groundY > maxGround) maxGround = groundY;
 
-                // Detect submerged columns (ocean/river floor) — hard reject
-                if (avoidLiquids && isSubmerged(world, gx, gz, groundY)) {
+                // Water proximity check — hard reject, runs even if avoidLiquids=false
+                // because the result is gated by avoidLiquids in the caller.
+                if (avoidLiquids && !hasLiquid && isSubmerged(world, gx, gz, groundY)) {
                     hasLiquid = true;
+                    // Don't break early — we still need min/max ground for variance.
                 }
 
                 Biome biome = world.getBiome(gx, groundY, gz);
@@ -376,7 +403,10 @@ final class MaceGenerator {
         Set<Biome> result = new HashSet<>();
 
         if (list == null || list.isEmpty()) {
-            for (String key : List.of("plains", "savanna", "taiga", "meadow", "birch_forest", "dark_forest")) {
+            // Default: only genuinely flat inland biomes. Forest/birch_forest removed
+            // because they generate on coastal cliffs very frequently.
+            for (String key : List.of("plains", "sunflower_plains", "savanna",
+                    "savanna_plateau", "meadow", "snowy_plains")) {
                 Biome b = resolveBiomeByKey("minecraft:" + key);
                 if (b != null) result.add(b);
             }
@@ -519,64 +549,64 @@ final class MaceGenerator {
     }
 
     // -------------------------------------------------------------------------
-    // Terrain modification helpers
+    // Volume obstruction check
     // -------------------------------------------------------------------------
 
-    private void fillSupports(World world, int originX, int originZ, Vector size, int baseY) {
-        int sx = (int) size.getX(), sz = (int) size.getZ();
-        for (int dx = 0; dx < sx; dx++) {
-            for (int dz = 0; dz < sz; dz++) {
-                int x = originX + dx, z = originZ + dz;
-                int groundY = findTrueGroundY(world, x, z);
-                if (groundY < baseY - 1) {
-                    Material fillMat = world.getBlockAt(x, groundY, z).getType();
-                    if (!fillMat.isSolid() || isNonGround(fillMat)) fillMat = Material.DIRT;
-                    for (int yy = baseY - 1; yy > groundY; yy--) {
-                        world.getBlockAt(x, yy, z).setType(fillMat, false);
-                    }
-                } else if (groundY >= baseY) {
-                    for (int yy = groundY; yy >= baseY; yy--) {
-                        world.getBlockAt(x, yy, z).setType(Material.AIR, false);
-                    }
-                    Material below = world.getBlockAt(x, baseY - 1, z).getType();
-                    if (!below.isSolid() || isNonGround(below)) {
-                        world.getBlockAt(x, baseY - 1, z).setType(Material.GRASS_BLOCK, false);
-                    }
-                }
-            }
-        }
+    /**
+     * Materials that are allowed to exist inside the structure's volume.
+     * Everything else (stone, dirt, rock, etc.) is considered an obstruction.
+     */
+    private static boolean isVolumePassable(Material m) {
+        return m == Material.AIR
+                || m == Material.CAVE_AIR
+                || m == Material.VOID_AIR
+                || m == Material.WATER          // surface water already rejected earlier
+                || m == Material.LAVA
+                || m == Material.SHORT_GRASS
+                || m == Material.TALL_GRASS
+                || m == Material.FERN
+                || m == Material.LARGE_FERN
+                || m == Material.DEAD_BUSH
+                || m == Material.SNOW
+                || m == Material.CACTUS
+                || m == Material.VINE
+                || m == Material.SUGAR_CANE
+                || m == Material.KELP
+                || m == Material.KELP_PLANT
+                || m == Material.SEAGRASS
+                || m == Material.TALL_SEAGRASS
+                || Tag.LOGS.isTagged(m)
+                || Tag.LEAVES.isTagged(m)
+                || Tag.SAPLINGS.isTagged(m)
+                || Tag.FLOWERS.isTagged(m);
     }
 
-    private void preClearSurface(World world, int originX, int baseY, int originZ, Vector size) {
-        int sx = (int) size.getX(), sz = (int) size.getZ();
-        for (int dx = 0; dx < sx; dx++) {
-            for (int dz = 0; dz < sz; dz++) {
-                int x = originX + dx, z = originZ + dz;
-                if (world.getBlockAt(x, baseY - 1, z).getType() == Material.GRASS_BLOCK)
-                    world.getBlockAt(x, baseY - 1, z).setType(Material.DIRT, false);
-                int clearTop = Math.min(baseY + 3, world.getMaxHeight());
-                for (int yy = baseY; yy < clearTop; yy++) {
-                    Material m = world.getBlockAt(x, yy, z).getType();
-                    if (!m.isSolid() || Tag.LEAVES.isTagged(m)
-                            || m == Material.SHORT_GRASS || m == Material.TALL_GRASS
-                            || m == Material.FERN || m == Material.LARGE_FERN
-                            || m == Material.SNOW || m == Material.CACTUS
-                            || m == Material.DEAD_BUSH)
-                        world.getBlockAt(x, yy, z).setType(Material.AIR, false);
-                }
-            }
-        }
-    }
-
-    private void clearVolume(World world, int originX, int baseY, int originZ, Vector size) {
+    /**
+     * Scans every block in the 3D bounding box the structure would occupy
+     * (from y to y+sizeY-1) and counts how many are solid terrain.
+     * Returns a VolumeCheck with the ratio of obstructed blocks to total blocks.
+     */
+    private VolumeCheck checkVolumeIsClear(World world, int originX, int baseY, int originZ, Vector size) {
         int sx = (int) size.getX();
-        int sy = Math.min((int) size.getY() + 2, world.getMaxHeight() - baseY);
+        int sy = (int) size.getY();
         int sz = (int) size.getZ();
-        for (int dx = 0; dx < sx; dx++)
-            for (int dz = 0; dz < sz; dz++)
-                for (int dy = 0; dy < sy; dy++)
-                    world.getBlockAt(originX + dx, baseY + dy, originZ + dz)
-                            .setType(Material.AIR, false);
+        int total = sx * sy * sz;
+        int occupied = 0;
+
+        for (int dx = 0; dx < sx; dx++) {
+            for (int dz = 0; dz < sz; dz++) {
+                for (int dy = 0; dy < sy; dy++) {
+                    Material m = world.getBlockAt(originX + dx, baseY + dy, originZ + dz).getType();
+                    if (!isVolumePassable(m)) {
+                        occupied++;
+                    }
+                }
+            }
+        }
+
+        VolumeCheck result = new VolumeCheck();
+        result.occupiedRatio = total == 0 ? 0.0 : (occupied / (double) total);
+        return result;
     }
 
     // -------------------------------------------------------------------------
@@ -587,15 +617,13 @@ final class MaceGenerator {
         return Math.min(max, Math.max(min, v));
     }
 
-    private Material parseMaterial(String name, Material def) {
-        if (name == null) return def;
-        Material m = Material.matchMaterial(name);
-        return m != null ? m : def;
-    }
-
     private static final class FlatCheck {
         int minGround, maxGround, variance;
         double solidRatio, allowedBiomeRatio;
         boolean hasLiquid;
+    }
+
+    private static final class VolumeCheck {
+        double occupiedRatio;
     }
 }

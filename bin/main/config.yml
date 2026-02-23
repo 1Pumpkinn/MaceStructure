@@ -3,8 +3,8 @@
 # ---------------------------------------------------------------
 
 distance:
-  min: 2500
-  max: 4000
+  min: 1500
+  max: 4500
 
 world:
   name: world
@@ -26,7 +26,9 @@ placement:
   # Retry rounds add up to +4 max, so worst-case is 6 blocks variance.
   maxVariance: 2
   minSolidRatio: 0.9
-  # Always reject water/lava — never relaxed
+  # Always reject water/lava — never relaxed.
+  # The proximity check in MaceGenerator also rejects any location within
+  # 8 blocks of water, preventing coastal cliff spawns.
   avoidLiquids: true
 
   requireLoadedChunks: false
@@ -36,9 +38,9 @@ placement:
   platform:
     enabled: false
 
-  # Flat, open land biomes only.
-  # Deliberately excludes: old_growth variants (huge trees), all taiga
-  # variants (dense/hilly), jungle, swamp, ocean, river, beach.
+  # Flat, open INLAND biomes only.
+  # forest and birch_forest removed — they frequently generate on coastal
+  # cliffs right next to ocean, causing the bad-looking placements.
   allowedBiomes:
     - minecraft:plains
     - minecraft:sunflower_plains
@@ -46,9 +48,6 @@ placement:
     - minecraft:savanna_plateau
     - minecraft:meadow
     - minecraft:snowy_plains
-    - minecraft:forest
-    - minecraft:flower_forest
-    - minecraft:birch_forest
 
   # High ratio required — must be mostly a flat open biome
   minAllowedBiomeRatio: 0.85
