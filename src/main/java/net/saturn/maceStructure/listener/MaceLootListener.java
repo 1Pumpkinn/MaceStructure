@@ -1,8 +1,10 @@
 package net.saturn.maceStructure.listener;
 
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -15,6 +17,11 @@ import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 
 public final class MaceLootListener implements Listener {
+    private final JavaPlugin plugin;
+
+    public MaceLootListener(JavaPlugin plugin) {
+        this.plugin = plugin;
+    }
 
     @EventHandler(ignoreCancelled = true)
     public void onContainerTake(InventoryClickEvent event) {
@@ -39,8 +46,11 @@ public final class MaceLootListener implements Listener {
 
         if (!taking) return;
 
+        if (plugin.getConfig().getBoolean("announce.broadcasted", false)) return;
         String container = containerName(top, player);
-        Bukkit.getServer().broadcastMessage(player.getName() + " found a Mace in " + container + "!");
+        Bukkit.getServer().broadcastMessage(ChatColor.RED + "" + ChatColor.BOLD + player.getName() + " found a Mace from a Structure!" + ChatColor.RESET);
+        plugin.getConfig().set("announce.broadcasted", true);
+        plugin.saveConfig();
     }
 
     private String containerName(Inventory top, Player player) {

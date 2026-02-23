@@ -22,7 +22,7 @@ public final class MaceStructure extends JavaPlugin {
         }
 
         PluginManager pm = Bukkit.getPluginManager();
-        pm.registerEvents(new net.saturn.maceStructure.listener.MaceLootListener(), this);
+        pm.registerEvents(new net.saturn.maceStructure.listener.MaceLootListener(this), this);
         pm.registerEvents(new net.saturn.maceStructure.listener.MaceRecipeBlocker(this), this);
 
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, event -> {
