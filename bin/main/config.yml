@@ -1,53 +1,47 @@
-# ---------------------------------------------------------------
+# ───────────────────────────────────────────────
 # MaceStructure config.yml
-# ---------------------------------------------------------------
+# ───────────────────────────────────────────────
 
-distance:
-  min: 1500
-  max: 4500
+# World to place the structure in
+world: world
 
-world:
-  name: world
+# NBT file to load (place in plugins/MaceStructure/)
+structureFile: mace.nbt
 
-structure:
-  file: mace.nbt
-  key: ""
+# Set automatically when the structure is placed — do not edit manually
+generated: false
+announced: false
 
-generated:
-  enabled: false
+# Set automatically after placement
+location:
+  world: world
+  x: 0
+  y: 64
+  z: 0
 
-attempts: 256
+# Broadcast message when a player finds the mace. Use {player} for their name.
+announceMessage: "§c§l{player} §r§cfound the Mace from the structure!"
 
 placement:
+  # Distance ring from world center
+  minDistance: 2500
+  maxDistance: 4000
+
+  # Candidates tried per round
+  attempts: 256
+
+  # How many rounds before giving up and using the best candidate found
+  # Each round relaxes constraints progressively
+  maxRounds: 5
+
+  # Y adjustment applied after finding ground level
   yOffset: 0
 
-  requireFlat: true
-  # Tight variance — only spawn on genuinely flat terrain.
-  # Retry rounds add up to +4 max, so worst-case is 6 blocks variance.
-  maxVariance: 2
-  minSolidRatio: 0.9
-  # Always reject water/lava — never relaxed.
-  # The proximity check in MaceGenerator also rejects any location within
-  # 8 blocks of water, preventing coastal cliff spawns.
-  avoidLiquids: true
-
-  requireLoadedChunks: false
-  clearVolumeBefore: true
-
-  # No platform — structure sits directly on terrain
-  platform:
-    enabled: false
-
-  # Flat, open INLAND biomes only.
-  # forest and birch_forest removed — they frequently generate on coastal
-  # cliffs right next to ocean, causing the bad-looking placements.
+  # Allowed biomes — structure will only spawn in these.
+  # Leave empty to allow any biome.
   allowedBiomes:
     - minecraft:plains
     - minecraft:sunflower_plains
-    - minecraft:savanna
-    - minecraft:savanna_plateau
     - minecraft:meadow
-    - minecraft:snowy_plains
-
-  # High ratio required — must be mostly a flat open biome
-  minAllowedBiomeRatio: 0.85
+    - minecraft:forest
+    - minecraft:birch_forest
