@@ -1,13 +1,10 @@
 name: MaceStructure
 version: '${version}'
-main: net.saturn.maceStructure.MaceStructure
+main: net.saturn.maceStructure.StructurePlugin
 api-version: '1.21'
 authors: [ PumpkinDev ]
 
-permissions:
-  macestructure.tp:
-    description: Teleport to the mace structure
-    default: op
-  macestructure.gen:
-    description: Manually trigger structure generation
-    default: op
+commands:
+  findmace:
+    description: Locate the mace structure
+    usage: /findmace
