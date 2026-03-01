@@ -8,3 +8,6 @@ commands:
   findmace:
     description: Locate the mace structure
     usage: /findmace
+  mace:
+    description: Mace utilities
+    usage: /mace cooldown <seconds>

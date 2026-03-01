@@ -8,119 +8,219 @@ import org.bukkit.block.structure.StructureRotation;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.block.BlockState;
+import org.bukkit.util.BlockTransformer;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.structure.Structure;
+import io.papermc.paper.command.brigadier.BasicCommand;
+import io.papermc.paper.command.brigadier.CommandSourceStack;
+import org.bukkit.event.Listener;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.player.PlayerJoinEvent;
 
 import java.io.InputStream;
+import java.util.Collections;
 import java.util.Random;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
-public final class StructurePlugin extends JavaPlugin {
+public final class StructurePlugin extends JavaPlugin implements Listener {
 
     private static final String STRUCTURE_FILE = "structures/mace.nbt";
     private static final int MIN_DISTANCE = 1900;
     private static final int MAX_DISTANCE = 2200;
 
-    // How flat the ground must be around the structure origin (in blocks)
-    private static final int FLAT_CHECK_RADIUS = 6;
-    // Max allowed height variation across the checked area
-    private static final int MAX_HEIGHT_VARIANCE = 2;
-    // Structure bounding box (adjust to match your .nbt size)
-    private static final int STRUCT_WIDTH  = 13; // X
-    private static final int STRUCT_HEIGHT = 12; // Y
-    private static final int STRUCT_DEPTH  = 13; // Z
-    // How many blocks to sink the structure into the ground
-    private static final int SINK_DEPTH = 1;
+    private static final int FLAT_CHECK_RADIUS = 3;
+    private static final int MAX_HEIGHT_VARIANCE = 3;
+    // Structure bounding box — must match your .nbt exactly (from NBT: size [16, 10, 19])
+    private static final int STRUCT_WIDTH  = 16; // X
+    private static final int STRUCT_HEIGHT = 10; // Y
+    private static final int STRUCT_DEPTH  = 19; // Z
+    private static final int ATTEMPTS_PER_TICK = 1;
+    private static final int MAX_ATTEMPTS = 300;
+
+    private int generationTaskId = -1;
+    private int attemptsSoFar = 0;
+    private boolean preloadingInProgress = false;
 
     @Override
     public void onEnable() {
+        new MaceCraftingDisabler(this);
+        getServer().getPluginManager().registerEvents(new MaceCooldownListener(this), this);
+        getServer().getPluginManager().registerEvents(this, this);
+        registerCommand("mace", (BasicCommand) (CommandSourceStack source, String[] args) -> {
+            if (!(source.getSender() instanceof Player player)) {
+                source.getSender().sendMessage("Only players can use this.");
+                return;
+            }
+            if (args.length == 2 && args[0].equalsIgnoreCase("cooldown")) {
+                try {
+                    int seconds = Integer.parseInt(args[1]);
+                    if (seconds < 0) {
+                        player.sendMessage(ChatColor.RED + "Seconds must be non-negative.");
+                        return;
+                    }
+                    int ticks = seconds * 20;
+                    getConfig().set("mace.cooldownTicks", ticks);
+                    saveConfig();
+                    player.sendMessage(ChatColor.GREEN + "Mace cooldown duration set to " + seconds + "s.");
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "Usage: /mace cooldown <seconds>");
+                }
+            } else {
+                player.sendMessage(ChatColor.YELLOW + "Usage: /mace cooldown <seconds>");
+            }
+        });
+        registerCommand("findmace", (BasicCommand) (CommandSourceStack source, String[] args) -> {
+            CommandSender sender = source.getSender();
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("Only players can use this.");
+                return;
+            }
+            if (!getConfig().getBoolean("generated")) {
+                player.sendMessage(ChatColor.RED + "Structure has not generated yet.");
+                return;
+            }
+            int x = getConfig().getInt("structure.x");
+            int y = getConfig().getInt("structure.y");
+            int z = getConfig().getInt("structure.z");
+            Location structureLoc = new Location(player.getWorld(), x, y, z);
+            double distance = player.getLocation().distance(structureLoc);
+            player.sendMessage(ChatColor.GOLD + "Mace Structure Location:");
+            player.sendMessage(ChatColor.YELLOW + "X: " + x + " Y: " + y + " Z: " + z);
+            player.sendMessage(ChatColor.GREEN + "Distance: " + (int) distance + " blocks");
+            player.setCompassTarget(structureLoc);
+            player.sendMessage(ChatColor.AQUA + "Your compass now points to the structure.");
+        });
+
+        if (!getConfig().contains("mace.cooldownTicks")) {
+            getConfig().set("mace.cooldownTicks", 40); // 2 seconds default
+        }
         if (!getConfig().contains("generated")) {
             getConfig().set("generated", false);
             saveConfig();
         }
 
-        if (!getConfig().getBoolean("generated")) {
-            Bukkit.getScheduler().runTask(this, this::generateStructureOnce);
+        if (!getConfig().getBoolean("generated") && !Bukkit.getOnlinePlayers().isEmpty()) {
+            startGenerationLoop();
         }
     }
 
-    private void generateStructureOnce() {
-        World world = Bukkit.getWorld("world");
-        if (world == null) {
-            getLogger().severe("World not found!");
-            return;
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent e) {
+        if (!getConfig().getBoolean("generated") && generationTaskId == -1) {
+            startGenerationLoop();
         }
+    }
 
-        Random random = new Random();
-        int attempts = 0;
+    private void startGenerationLoop() {
+        if (generationTaskId != -1) return;
+        attemptsSoFar = 0;
+        generationTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
+            if (getConfig().getBoolean("generated")) {
+                Bukkit.getScheduler().cancelTask(generationTaskId);
+                generationTaskId = -1;
+                return;
+            }
+            if (Bukkit.getOnlinePlayers().isEmpty()) return;
+            if (preloadingInProgress) return;
 
-        while (attempts < 300) {
-            attempts++;
+            World world = Bukkit.getWorld("world");
+            if (world == null) return;
 
+            Random random = new Random();
             double angle = random.nextDouble() * 2 * Math.PI;
             int distance = MIN_DISTANCE + random.nextInt(MAX_DISTANCE - MIN_DISTANCE);
-
             int x = (int) (Math.cos(angle) * distance);
             int z = (int) (Math.sin(angle) * distance);
 
-            // Load all chunks in the area we'll be checking
-            for (int cx = (x - FLAT_CHECK_RADIUS) >> 4; cx <= (x + FLAT_CHECK_RADIUS + STRUCT_WIDTH) >> 4; cx++) {
-                for (int cz = (z - FLAT_CHECK_RADIUS) >> 4; cz <= (z + FLAT_CHECK_RADIUS + STRUCT_DEPTH) >> 4; cz++) {
-                    world.getChunkAt(cx, cz).load(true);
+            preloadingInProgress = true;
+            preloadAreaChunks(world, x, z).whenComplete((v, err) -> Bukkit.getScheduler().runTask(this, () -> {
+                preloadingInProgress = false;
+                for (int i = 0; i < ATTEMPTS_PER_TICK; i++) {
+                    if (tryGenerateOnceWith(world, x, z)) {
+                        Bukkit.getScheduler().cancelTask(generationTaskId);
+                        generationTaskId = -1;
+                        return;
+                    }
+                    attemptsSoFar++;
+                    if (attemptsSoFar >= MAX_ATTEMPTS) {
+                        getLogger().warning("Could not find a valid flat location after " + attemptsSoFar + " attempts.");
+                        Bukkit.getScheduler().cancelTask(generationTaskId);
+                        generationTaskId = -1;
+                        return;
+                    }
                 }
+            }));
+        }, 100L, 20L);
+    }
+
+    private CompletableFuture<Void> preloadAreaChunks(World world, int x, int z) {
+        int minX = (x - FLAT_CHECK_RADIUS) >> 4;
+        int maxX = (x + FLAT_CHECK_RADIUS + STRUCT_WIDTH) >> 4;
+        int minZ = (z - FLAT_CHECK_RADIUS) >> 4;
+        int maxZ = (z + FLAT_CHECK_RADIUS + STRUCT_DEPTH) >> 4;
+        List<CompletableFuture<?>> futures = new ArrayList<>();
+        for (int cx = minX; cx <= maxX; cx++) {
+            for (int cz = minZ; cz <= maxZ; cz++) {
+                futures.add(world.getChunkAtAsync(cx, cz, true));
             }
+        }
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+    }
 
-            int baseY = world.getHighestBlockYAt(x, z);
-            Block ground = world.getBlockAt(x, baseY - 1, z);
+    private boolean tryGenerateOnceWith(World world, int x, int z) {
+        int baseY = world.getHighestBlockYAt(x, z);
+        Block ground = world.getBlockAt(x, baseY - 1, z);
 
-            if (!isValidGround(ground)) continue;
-            if (!isFlatArea(world, x, baseY, z)) continue;
+        if (!isValidGround(ground)) return false;
+        if (!isFlatArea(world, x, baseY, z)) return false;
 
-            // Grab the natural ground material (sand, grass, dirt, etc.)
-            Material groundMaterial = ground.getType();
-
-            // Sink placement by SINK_DEPTH so structure sits slightly into the ground
-            int placeY = baseY - SINK_DEPTH;
-
-            // Step 1: Only clear blocks STRICTLY within the structure's footprint, from placeY upward.
-            // Do NOT touch anything outside the footprint.
-            clearStructureFootprint(world, x, placeY, z);
-
-            // Step 2: Fill the sunk layer under the footprint solid so there's no void/floating base.
-            // This replaces any air that was exposed by sinking.
-            fillSunkLayer(world, x, placeY, z, groundMaterial);
-
-            // Step 3: Place the structure
-            Location location = new Location(world, x, placeY, z);
-            Structure structure = loadStructureFromPlugin();
-            if (structure == null) {
-                getLogger().severe("Structure file not found!");
-                return;
-            }
-
-            structure.place(location, true, StructureRotation.NONE, Mirror.NONE, 0, 1.0f, random);
-
-            getConfig().set("generated", true);
-            getConfig().set("structure.x", x);
-            getConfig().set("structure.y", placeY);
-            getConfig().set("structure.z", z);
-            saveConfig();
-
-            getLogger().info("Structure generated at: " + x + ", " + placeY + ", " + z);
-            return;
+        Location location = new Location(world, x, baseY, z);
+        Structure structure = loadStructureFromPlugin();
+        if (structure == null) {
+            getLogger().severe("Structure file not found!");
+            return false;
         }
 
-        getLogger().warning("Could not find a valid flat location after 300 attempts.");
+        BlockTransformer ignoreAir = (region, bx, by, bz, current, state) -> {
+            Material type = current.getType();
+            if (type == Material.STRUCTURE_VOID) {
+                BlockState worldState = state.getWorld();
+                current.setBlockData(worldState.getBlockData()); // keep world outside
+                return current;
+            }
+            if (type.isAir()) {
+                current.setType(Material.AIR); // enforce air for interior
+                return current;
+            }
+            return current;
+        };
+
+        Random random = new Random();
+        structure.place(location, true, StructureRotation.NONE, Mirror.NONE, 0, 1.0f, random, Collections.singleton(ignoreAir), Collections.emptyList());
+
+        getConfig().set("generated", true);
+        getConfig().set("structure.x", x);
+        getConfig().set("structure.y", baseY);
+        getConfig().set("structure.z", z);
+        saveConfig();
+
+        getLogger().info("Structure generated at: " + x + ", " + baseY + ", " + z);
+        return true;
     }
 
     /**
-     * Checks that ground height within FLAT_CHECK_RADIUS doesn't vary more than MAX_HEIGHT_VARIANCE.
+     * Checks that ground height within FLAT_CHECK_RADIUS + structure footprint
+     * doesn't vary more than MAX_HEIGHT_VARIANCE.
      */
     private boolean isFlatArea(World world, int centerX, int centerY, int centerZ) {
         int minY = centerY;
         int maxY = centerY;
 
-        for (int dx = -FLAT_CHECK_RADIUS; dx <= FLAT_CHECK_RADIUS + STRUCT_WIDTH; dx++) {
-            for (int dz = -FLAT_CHECK_RADIUS; dz <= FLAT_CHECK_RADIUS + STRUCT_DEPTH; dz++) {
+        for (int dx = -FLAT_CHECK_RADIUS; dx <= FLAT_CHECK_RADIUS + STRUCT_WIDTH; dx += 2) {
+            for (int dz = -FLAT_CHECK_RADIUS; dz <= FLAT_CHECK_RADIUS + STRUCT_DEPTH; dz += 2) {
                 int y = world.getHighestBlockYAt(centerX + dx, centerZ + dz);
                 Block b = world.getBlockAt(centerX + dx, y - 1, centerZ + dz);
                 if (!isValidGround(b)) return false;
@@ -130,45 +230,6 @@ public final class StructurePlugin extends JavaPlugin {
         }
 
         return (maxY - minY) <= MAX_HEIGHT_VARIANCE;
-    }
-
-    /**
-     * Clears ONLY the exact structure footprint volume (x to x+WIDTH, z to z+DEPTH)
-     * starting from placeY upward. Does NOT touch any blocks outside this rectangle.
-     * This prevents the "moat" effect around the structure.
-     */
-    private void clearStructureFootprint(World world, int x, int y, int z) {
-        for (int dy = 0; dy < STRUCT_HEIGHT + SINK_DEPTH; dy++) {
-            for (int dx = 0; dx < STRUCT_WIDTH; dx++) {
-                for (int dz = 0; dz < STRUCT_DEPTH; dz++) {
-                    Block b = world.getBlockAt(x + dx, y + dy, z + dz);
-                    if (b.getType() != Material.AIR && b.getType() != Material.CAVE_AIR) {
-                        b.setType(Material.AIR, false);
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Fills the sunk layer (the SINK_DEPTH rows below baseY) within the structure footprint
-     * with the ground material. This ensures the structure base doesn't float —
-     * the bottom row of the structure will sit on solid ground rather than air.
-     *
-     * Only fills blocks that are currently air (won't overwrite existing solid terrain).
-     */
-    private void fillSunkLayer(World world, int x, int placeY, int z, Material groundMaterial) {
-        // Fill from placeY (inclusive) for SINK_DEPTH layers — these are the buried rows
-        for (int dy = 0; dy < SINK_DEPTH; dy++) {
-            for (int dx = 0; dx < STRUCT_WIDTH; dx++) {
-                for (int dz = 0; dz < STRUCT_DEPTH; dz++) {
-                    Block b = world.getBlockAt(x + dx, placeY + dy, z + dz);
-                    if (b.getType() == Material.AIR || b.getType() == Material.CAVE_AIR) {
-                        b.setType(groundMaterial, false);
-                    }
-                }
-            }
-        }
     }
 
     private Structure loadStructureFromPlugin() {
@@ -210,7 +271,6 @@ public final class StructurePlugin extends JavaPlugin {
         if (biome.name().contains("DESERT")) return false;
         if (biome.name().contains("BADLANDS")) return false;
         if (biome.name().contains("ERODED_BADLANDS")) return false;
-
 
         return true;
     }
