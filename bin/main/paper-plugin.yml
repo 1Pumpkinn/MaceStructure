@@ -8,6 +8,18 @@ commands:
   findmace:
     description: Locate the mace structure
     usage: /findmace
+    permission: macestructure.findmace
+    permission-message: You don't have permission to use this command.
   mace:
     description: Mace utilities
     usage: /mace cooldown <seconds>
+    permission: macestructure.mace
+    permission-message: You don't have permission to use this command.
+
+permissions:
+  macestructure.findmace:
+    description: Allows use of /findmace
+    default: op
+  macestructure.mace:
+    description: Allows use of /mace
+    default: op

@@ -56,6 +56,10 @@ public final class StructurePlugin extends JavaPlugin implements Listener {
                 source.getSender().sendMessage("Only players can use this.");
                 return;
             }
+            if (!player.hasPermission("macestructure.mace")) {
+                player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                return;
+            }
             if (args.length == 2 && args[0].equalsIgnoreCase("cooldown")) {
                 try {
                     int seconds = Integer.parseInt(args[1]);
@@ -78,6 +82,10 @@ public final class StructurePlugin extends JavaPlugin implements Listener {
             CommandSender sender = source.getSender();
             if (!(sender instanceof Player player)) {
                 sender.sendMessage("Only players can use this.");
+                return;
+            }
+            if (!player.hasPermission("macestructure.findmace")) {
+                player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
                 return;
             }
             if (!getConfig().getBoolean("generated")) {
@@ -283,6 +291,11 @@ public final class StructurePlugin extends JavaPlugin implements Listener {
 
         if (!(sender instanceof Player player)) {
             sender.sendMessage("Only players can use this.");
+            return true;
+        }
+
+        if (!player.hasPermission("macestructure.findmace")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
             return true;
         }
 
