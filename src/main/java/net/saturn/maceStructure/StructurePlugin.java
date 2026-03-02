@@ -49,6 +49,8 @@ public final class StructurePlugin extends JavaPlugin implements Listener {
         new MaceCraftingDisabler(this);
         getServer().getPluginManager().registerEvents(new MaceCooldownListener(this), this);
         getServer().getPluginManager().registerEvents(this, this);
+        getServer().getPluginManager().registerEvents(new MaceBarrelBroadcastListener(), this);
+        getServer().getPluginManager().registerEvents(new MaceEnderChestBlockListener(), this);
         registerCommand("mace", (BasicCommand) (CommandSourceStack source, String[] args) -> {
             if (!(source.getSender() instanceof Player player)) {
                 source.getSender().sendMessage("Only players can use this.");
